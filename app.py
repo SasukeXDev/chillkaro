@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import os
 import secrets
 import sqlite3
@@ -43,7 +44,18 @@ def create_app() -> Flask:
         == "true",
         UPLOAD_FOLDER=str(UPLOAD_DIR),
         DOWNLOAD_CACHE_SECONDS=int(os.environ.get("DOWNLOAD_CACHE_SECONDS", "300")),
-        ALLOWED_DOWNLOAD_HOSTS=os.environ.get("ALLOWED_DOWNLOAD_HOSTS", "https://www.chillkaro.in/"),
+        ALLOWED_DOWNLOAD_HOSTS=os.environ.get(
+            "ALLOWED_DOWNLOAD_HOSTS", "https://www.chillkaro.in,https://chillkaro.in"
+        ),
+        DOWNLOAD_REQUIRE_TOKEN=os.environ.get("DOWNLOAD_REQUIRE_TOKEN", "false").lower()
+        == "true",
+        DOWNLOAD_TOKEN_TTL_SECONDS=int(os.environ.get("DOWNLOAD_TOKEN_TTL_SECONDS", "900")),
+        DOWNLOAD_RATE_LIMIT_WINDOW_SECONDS=int(
+            os.environ.get("DOWNLOAD_RATE_LIMIT_WINDOW_SECONDS", "60")
+        ),
+        DOWNLOAD_RATE_LIMIT_MAX_REQUESTS=int(
+            os.environ.get("DOWNLOAD_RATE_LIMIT_MAX_REQUESTS", "120")
+        ),
     )
 
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -151,11 +163,17 @@ def create_app() -> Flask:
         if should_redirect_to_https(request):
             return redirect(request.url.replace("http://", "https://", 1), code=302)
 
+        if is_rate_limited(request):
+            abort(429, description="Too many download requests. Please try again shortly.")
+
         if is_hotlink_blocked(request):
             abort(403, description="Hotlinking is not allowed.")
 
+        if is_download_token_required() and not has_valid_download_token(request):
+            abort(403, description="A valid download token is required.")
+
         log_download(
-            ip=request.headers.get("CF-Connecting-IP", request.remote_addr),
+            ip=get_client_ip(request),
             user_agent=request.headers.get("User-Agent", ""),
             referer=request.headers.get("Referer", ""),
         )
@@ -213,7 +231,12 @@ def create_app() -> Flask:
             500,
         )
 
+    @app.errorhandler(429)
+    def handle_429(error):
+        return render_template("error.html", code=429, message=str(error)), 429
+
     return app
+
 
 
 def login_required(view_func):
@@ -373,7 +396,12 @@ def is_hotlink_blocked(req) -> bool:
     referer = req.headers.get("Referer")
     origin = req.headers.get("Origin")
 
-    if referer and not is_allowed_source_host(referer, allowed_hosts):
+    if not referer:
+        if origin and not is_allowed_source_host(origin, allowed_hosts):
+            return True
+        return False
+
+    if not is_allowed_source_host(referer, allowed_hosts):
         return True
 
     if origin and not is_allowed_source_host(origin, allowed_hosts):
@@ -393,18 +421,81 @@ def get_allowed_download_hosts(req) -> set[str]:
         normalize_host(req.host),
         normalize_host(req.headers.get("X-Forwarded-Host", "")),
     }
-    return {host for host in configured.union(runtime_hosts) if host}
+    return {host for host in configured.union(runtime_hosts, {"chillkaro.in"}) if host}
 
 
 def normalize_host(host: str) -> str:
-    return host.split(":", 1)[0].strip().lower()
+    candidate = (host or "").strip().lower()
+    if not candidate:
+        return ""
+
+    parsed = urlparse(candidate if "://" in candidate else f"//{candidate}")
+    netloc = parsed.netloc or parsed.path
+    return netloc.split(":", 1)[0].strip()
 
 
 def is_allowed_source_host(source_url: str, allowed_hosts: set[str]) -> bool:
-    host = normalize_host(urlparse(source_url).netloc)
+    parsed_url = urlparse(source_url)
+    host = normalize_host(parsed_url.netloc)
     if not host:
         return False
+    if parsed_url.scheme and parsed_url.scheme not in {"http", "https"}:
+        return False
     return any(host == allowed or host.endswith(f".{allowed}") for allowed in allowed_hosts)
+
+
+def is_download_token_required() -> bool:
+    return current_app.config.get("DOWNLOAD_REQUIRE_TOKEN", False)
+
+
+def get_client_ip(req) -> str:
+    return req.headers.get("CF-Connecting-IP", req.remote_addr or "unknown")
+
+
+def is_rate_limited(req) -> bool:
+    window_seconds = int(current_app.config.get("DOWNLOAD_RATE_LIMIT_WINDOW_SECONDS", 60))
+    max_requests = int(current_app.config.get("DOWNLOAD_RATE_LIMIT_MAX_REQUESTS", 120))
+
+    if window_seconds <= 0 or max_requests <= 0:
+        return False
+
+    client_ip = get_client_ip(req)
+    window_cutoff = datetime.now(timezone.utc).timestamp() - window_seconds
+
+    total_in_window = run_db(
+        """
+        SELECT COUNT(*) AS total
+        FROM download_events
+        WHERE ip_address = ?
+          AND unixepoch(downloaded_at) >= ?
+        """,
+        (client_ip, int(window_cutoff)),
+    ).fetchone()["total"]
+
+    return total_in_window >= max_requests
+
+
+def has_valid_download_token(req) -> bool:
+    token = req.args.get("token", "")
+    expires = req.args.get("expires", "")
+    if not token or not expires:
+        return False
+
+    if not expires.isdigit():
+        return False
+
+    expires_at = int(expires)
+    if expires_at < int(datetime.now(timezone.utc).timestamp()):
+        return False
+
+    expected_token = generate_download_token(expires_at)
+    return hmac.compare_digest(token, expected_token)
+
+
+def generate_download_token(expires_at: int) -> str:
+    secret_key = current_app.config["SECRET_KEY"].encode("utf-8")
+    message = f"download:{expires_at}".encode("utf-8")
+    return hmac.new(secret_key, message, hashlib.sha256).hexdigest()
 
 
 def should_redirect_to_https(req) -> bool:
