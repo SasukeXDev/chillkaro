@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Download Stats{% endblock %}
+{% block content %}
+<header class="topbar">
+  <h1>Download Analytics</h1>
+  <a class="button-link" href="{{ url_for('admin_dashboard') }}">Back to dashboard</a>
+</header>
+
+<section class="card">
+  <ul class="stat-list">
+    <li><strong>Total downloads:</strong> {{ stats.total_downloads }}</li>
+    <li><strong>Last download:</strong> {{ stats.last_download or 'No downloads yet' }}</li>
+  </ul>
+</section>
+
+<section class="card">
+  <h2>Recent Download History</h2>
+  {% if history %}
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Timestamp (UTC)</th>
+            <th>IP</th>
+            <th>Referer</th>
+            <th>User Agent</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in history %}
+            <tr>
+              <td>{{ item.downloaded_at }}</td>
+              <td>{{ item.ip_address or 'Unknown' }}</td>
+              <td>{{ item.referer or 'Direct' }}</td>
+              <td class="ua">{{ item.user_agent or 'Unknown' }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <p>No downloads have been recorded yet.</p>
+  {% endif %}
+</section>
+{% endblock %}
