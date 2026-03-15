@@ -43,7 +43,7 @@ def create_app() -> Flask:
         == "true",
         UPLOAD_FOLDER=str(UPLOAD_DIR),
         DOWNLOAD_CACHE_SECONDS=int(os.environ.get("DOWNLOAD_CACHE_SECONDS", "300")),
-        ALLOWED_DOWNLOAD_HOSTS=os.environ.get("ALLOWED_DOWNLOAD_HOSTS", ""),
+        ALLOWED_DOWNLOAD_HOSTS=os.environ.get("ALLOWED_DOWNLOAD_HOSTS", "https://www.chillkaro.in/"),
     )
 
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
