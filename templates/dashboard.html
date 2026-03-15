@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Admin Dashboard{% endblock %}
+{% block content %}
+<header class="topbar">
+  <h1>APK Hosting Dashboard</h1>
+  <form action="{{ url_for('admin_logout') }}" method="post">
+    <button type="submit" class="secondary">Logout</button>
+  </form>
+</header>
+
+<section class="grid two-up">
+  <article class="card">
+    <h2>Upload Latest APK</h2>
+    <p class="subtle">Permanent link: <code>/download</code></p>
+    <form action="{{ url_for('admin_dashboard') }}" method="post" enctype="multipart/form-data" class="form-grid">
+      <label for="apk_file">APK file (.apk only)</label>
+      <input id="apk_file" type="file" name="apk_file" accept=".apk" required />
+      <p class="subtle">Max upload size: {{ max_upload_mb }}MB</p>
+      <button type="submit">Upload APK</button>
+    </form>
+  </article>
+
+  <article class="card">
+    <h2>Download Stats</h2>
+    <ul class="stat-list">
+      <li><strong>Total downloads:</strong> {{ stats.total_downloads }}</li>
+      <li><strong>Last download:</strong> {{ stats.last_download or 'No downloads yet' }}</li>
+      <li><strong>Permanent URL:</strong> <a href="{{ url_for('download_latest', _external=true) }}">{{ url_for('download_latest', _external=true) }}</a></li>
+    </ul>
+    <a class="button-link" href="{{ url_for('admin_stats') }}">View full history</a>
+  </article>
+</section>
+
+<section class="card">
+  <h2>Current Version Info</h2>
+  {% if current_apk %}
+    <ul class="stat-list">
+      <li><strong>Original filename:</strong> {{ current_apk.original_name }}</li>
+      <li><strong>Stored as:</strong> {{ current_apk.storage_name }}</li>
+      <li><strong>File size:</strong> {{ (current_apk.file_size / (1024*1024))|round(2) }} MB</li>
+      <li><strong>SHA256:</strong> <code>{{ current_apk.sha256 }}</code></li>
+      <li><strong>Uploaded at:</strong> {{ current_apk.uploaded_at }}</li>
+    </ul>
+  {% else %}
+    <p>No APK uploaded yet.</p>
+  {% endif %}
+</section>
+{% endblock %}
