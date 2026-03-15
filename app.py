@@ -5,10 +5,12 @@ import sqlite3
 from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
+from urllib.parse import urlparse
 
 from flask import (
     Flask,
     abort,
+    current_app,
     flash,
     g,
     redirect,
@@ -41,6 +43,7 @@ def create_app() -> Flask:
         == "true",
         UPLOAD_FOLDER=str(UPLOAD_DIR),
         DOWNLOAD_CACHE_SECONDS=int(os.environ.get("DOWNLOAD_CACHE_SECONDS", "300")),
+        ALLOWED_DOWNLOAD_HOSTS=os.environ.get("ALLOWED_DOWNLOAD_HOSTS", "https://www.chillkaro.in/"),
     )
 
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -145,6 +148,9 @@ def create_app() -> Flask:
         if not latest_path.exists():
             abort(404, description="No APK has been uploaded yet.")
 
+        if should_redirect_to_https(request):
+            return redirect(request.url.replace("http://", "https://", 1), code=302)
+
         if is_hotlink_blocked(request):
             abort(403, description="Hotlinking is not allowed.")
 
@@ -168,6 +174,8 @@ def create_app() -> Flask:
         cache_ttl = app.config["DOWNLOAD_CACHE_SECONDS"]
         response.headers["Content-Type"] = "application/vnd.android.package-archive"
         response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["Cache-Control"] = (
             f"public, max-age={cache_ttl}, s-maxage={cache_ttl}, must-revalidate"
         )
@@ -361,11 +369,50 @@ def is_valid_apk_file(path: Path) -> bool:
 
 
 def is_hotlink_blocked(req) -> bool:
+    allowed_hosts = get_allowed_download_hosts(req)
     referer = req.headers.get("Referer")
-    if not referer:
+    origin = req.headers.get("Origin")
+
+    if referer and not is_allowed_source_host(referer, allowed_hosts):
+        return True
+
+    if origin and not is_allowed_source_host(origin, allowed_hosts):
+        return True
+
+    return False
+
+
+def get_allowed_download_hosts(req) -> set[str]:
+    configured_hosts = current_app.config.get("ALLOWED_DOWNLOAD_HOSTS", "")
+    configured = {
+        normalize_host(candidate)
+        for candidate in configured_hosts.split(",")
+        if candidate.strip()
+    }
+    runtime_hosts = {
+        normalize_host(req.host),
+        normalize_host(req.headers.get("X-Forwarded-Host", "")),
+    }
+    return {host for host in configured.union(runtime_hosts) if host}
+
+
+def normalize_host(host: str) -> str:
+    return host.split(":", 1)[0].strip().lower()
+
+
+def is_allowed_source_host(source_url: str, allowed_hosts: set[str]) -> bool:
+    host = normalize_host(urlparse(source_url).netloc)
+    if not host:
         return False
-    allowed_host = req.host
-    return allowed_host not in referer
+    return any(host == allowed or host.endswith(f".{allowed}") for allowed in allowed_hosts)
+
+
+def should_redirect_to_https(req) -> bool:
+    proto = req.headers.get("X-Forwarded-Proto", "").lower()
+    is_secure_request = req.is_secure or proto == "https"
+    host = normalize_host(req.host)
+    is_local = host in {"localhost", "127.0.0.1"}
+    return not is_secure_request and not is_local
 
 
 def sha256sum(path: Path) -> str:
